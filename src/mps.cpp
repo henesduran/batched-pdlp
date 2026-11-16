@@ -7,7 +7,7 @@
 #include <unordered_map>
 
 static const double INF = std::numeric_limits<double>::infinity();
-
+//reads mps to At then takes transpose to obtain A
 LP read_mps(const std::string& path) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("cannot open " + path);
@@ -20,7 +20,8 @@ LP read_mps(const std::string& path) {
     std::vector<bool> has_rng;
     std::string obj_row, sec, line, cur_col;
     int m = 0;
-
+    
+    //row --> index
     auto row = [&](const std::string& name) {
         auto it = row_id.find(name);
         if (it == row_id.end()) throw std::runtime_error("unknown row " + name);
@@ -30,6 +31,7 @@ LP read_mps(const std::string& path) {
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '*') continue;
         std::istringstream ss(line);
+        //if not space = new section
         if (!isspace((unsigned char)line[0])) { ss >> sec; continue; }
 
         if (sec == "ROWS") {
@@ -91,6 +93,8 @@ LP read_mps(const std::string& path) {
     At.n = m;
     lp.A = transpose(At);
     
+
+    //second transpose?? = transposing twice gives sorted indices in A and At
     lp.At = transpose(lp.A);
 
     if (rhs.empty()) { rhs.assign(m, 0.0); rng.assign(m, 0.0); has_rng.assign(m, false); }

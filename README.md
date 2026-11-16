@@ -1,16 +1,57 @@
 # batched-pdlp
 
-CPU batched PDHG for N LPs that share the same constraint matrix A (only c, bounds differ).
+PDHG on the CPU for N linear programs that share the same constraint matrix A and differ only in
+their objective vectors. All N LPs are solved together: each iteration multiplies A by an n x N block
+(SpMM), so A is read once per iteration for all N instead of once per LP.
 
-- `src/spmm.hpp`: CSR SpMM. X and Y are row-major with N columns, so for N=8 one row is one cache line. Rows are split across threads by nnz.
-- `src/pdhg.hpp`: constant-step PDHG (eta = 0.998/||A||_2), single (`pdhg`) and batched (`pdhg_batch<N>`). Each LP stops on its own KKT check.
-- `src/mps.cpp`: MPS reader. COLUMNS fill A^T directly, A is its transpose.
+The LP form is min c'x subject to l <= Ax <= u, xl <= x <= xu. The method follows cuPDLPx:
+reflected Halpern PDHG with adaptive restarts, PID update of the primal weight, and diagonal
+scaling (geometric mean, Ruiz, Pock-Chambolle). Each LP has its own step sizes, restarts and
+termination; finished LPs are removed from the batch.
 
-Build: `make` (g++ -O3 -march=native -fopenmp).
+## Build
 
-| binary | |
-|---|---|
-| `spmm_check file.mps` | spmm<N> vs spmv, N = 1..64 |
-| `spmm_bench file.mps [reps]` | SpMM time per LP, N = 1..64 |
-| `pdhg_batch file.mps [delta] [max_iter]` | batch of 8 vs 8 single solves, bitwise comparison |
-| `pdhg_bench file.mps [iters] [nocopies]` | time per iteration per LP: single, batch N=8, parallel copies |
+```
+mkdir -p build
+g++ -O3 -march=native -fopenmp -std=c++17 -Isrc bench/solve.cpp src/mps.cpp -o build/solve
+```
+
+## Run
+
+```
+OMP_NUM_THREADS=4 build/solve many afiro.mps 0 4 4
+```
+
+Solves 4 copies of afiro (delta 0 means the same objective) as one batch of 4. The output is one CSV
+line per LP (status, iterations, primal and dual objective), then the total time.
+
+With delta > 0, LP 0 keeps c and LP l gets c_j (1 + delta u), u uniform in [-1, 1].
+
+## Modes
+
+- `many file.mps delta nlp chunk [key=val ...]`: solves nlp LPs in batches of chunk. chunk 1 solves them one by one.
+- `single file.mps [key=val ...]`: solves one LP.
+- `batch file.mps delta`: solves 8 LPs as one batch, then each alone, and checks that the results are bitwise equal. Build with `-ffp-contract=off` for this.
+- `kkt file.mps delta nlp eps sol[:lp] ...`: checks solution files against the KKT conditions of the unscaled LP.
+- `mps file.mps delta lp out.mps [nlp]`: writes LP number lp as an MPS file.
+- `sb file.mps nb`: experimental, strong branching children of a MIP root as batches.
+
+Keys: `eps` (default 1e-4, relative), `maxit`, `freq` (check period, default 200). `many` also takes
+`sol=dir` (write the solutions) and `par=1` (run the batches side by side, one thread each).
+
+## Layout
+
+```
+bench/solve.cpp   command-line driver
+src/pdhg.hpp      batched PDHG: scaling, iteration, restarts, KKT check
+src/spmm.hpp      sparse matrix times a vector (SpMV) or an n x N block (SpMM)
+src/csr.hpp       CSR matrix and transpose
+src/mps.hpp/.cpp  MPS reader, LP struct
+```
+
+## Limitations
+
+- Minimization only. OBJSENSE MAX is not read, so a max problem is silently solved as min.
+- No infeasibility or unboundedness detection. Such LPs run until maxit.
+- No presolve. Plain .mps only, no .gz.
+- Needs g++ with OpenMP (Linux or WSL).

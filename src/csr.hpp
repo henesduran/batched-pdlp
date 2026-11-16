@@ -10,6 +10,9 @@ struct CSR {
 
 
 inline CSR transpose(const CSR& A) {
+
+    //transpose init
+
     CSR T;
     T.m = A.n; T.n = A.m;
     T.row_ptr.assign(A.n + 1, 0);
@@ -17,7 +20,11 @@ inline CSR transpose(const CSR& A) {
     T.val.resize(A.nnz());
     for (int j : A.col_idx) T.row_ptr[j + 1]++;
     for (int j = 0; j < A.n; j++) T.row_ptr[j + 1] += T.row_ptr[j];
+
+    //additional pos vector for next nonzero, to not modify row_ptr
     std::vector<int> pos(T.row_ptr.begin(), T.row_ptr.end() - 1);
+
+    //fill transpose
     for (int i = 0; i < A.m; i++)
         for (int k = A.row_ptr[i]; k < A.row_ptr[i + 1]; k++) {
             int p = pos[A.col_idx[k]]++;
