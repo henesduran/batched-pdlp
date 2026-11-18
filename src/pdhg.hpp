@@ -7,6 +7,15 @@
 #include "mps.hpp"
 #include "spmm.hpp"
 
+struct Timings {
+    double t_setup = 0.0;
+    double t_spmm_main = 0.0;   // AX and AtY in main iterations
+    double t_spmm_check = 0.0;  // AtYh and AXh SpMM in checks
+    double t_check_other = 0.0; // other checks
+    double t_other = 0.0;
+    double t_total = 0.0;
+};
+
 inline double nrm2(const std::vector<double>& v) {
     double s = 0.0;
     for (double a : v) s += a * a;
@@ -149,7 +158,8 @@ inline double bound_norm(const std::vector<double>& l, const std::vector<double>
 template <int N>
 std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double eps = 1e-4,
                             int max_iter = 1000000, Opts o = {}, const Branch* br = nullptr,
-                            const Sol* warm = nullptr) {
+                            const Sol* warm = nullptr, Timings* tm = nullptr) {
+    double t_batch_start = omp_get_wtime();
     const int m = lp.A.m, n = lp.A.n;
     LP s = lp;
     std::vector<double> R(m, 1.0), S(n, 1.0);
@@ -211,6 +221,9 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
     std::vector<double> x(n), y(m), Ax(m), r(n), dres(n), c(n);
 
 
+    double t_setup_end = omp_get_wtime();
+    if (tm) tm->t_setup += (t_setup_end - t_batch_start);
+    double t_spmm_main_acc = 0.0, t_spmm_check_acc = 0.0, t_check_other_acc = 0.0;
 
     for (int it = 0; it < max_iter && left; it++) {
         //check if kontrol iteration
@@ -225,8 +238,11 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
             //halpern weight
             hw[l] = o.halpern ? (k[l] + 1.0) / (k[l] + 2.0) : 1.0;
         }
-        //get AtY with active kernel  
+        //get AtY with active kernel
+        double t_sp0 = omp_get_wtime();
         spmm_w<N>(W, s.At, Y.data(), AtY.data());
+        t_spmm_main_acc += omp_get_wtime() - t_sp0;
+
         #pragma omp parallel for
         for (int j = 0; j < n; j++)
             for (int l = 0; l < W; l++) {
@@ -243,8 +259,11 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
                 //update X with halpern anchor
                 X[q] = hw[l] * (g * xb + (1 - g) * X[q]) + (1 - hw[l]) * X0[q];
             }
-        
+
+        t_sp0 = omp_get_wtime();
         spmm_w<N>(W, s.A, Xb.data(), AX.data());
+        t_spmm_main_acc += omp_get_wtime() - t_sp0;
+
         #pragma omp parallel for
         for (int i = 0; i < m; i++)
             for (int l = 0; l < W; l++) {
@@ -258,9 +277,12 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
             }
         for (int l = 0; l < W; l++) k[l]++;
         if (!keep) continue;
-
-        // fixed-point error(FPE) ||z - T(z)||_P (times eta), z = current iterate, T(z) = PDHG step
+        // FPE's SpMM
+        double t_sp_ck = omp_get_wtime();
         spmm_w<N>(W, s.At, Yh.data(), AtYh.data());
+        t_spmm_check_acc += omp_get_wtime() - t_sp_ck;
+        // FPE norm 
+        double t_norm0 = omp_get_wtime();
         for (int l = 0; l < W; l++) {
             if (done[l]) continue;
             double dx2 = 0, dy2 = 0, cr = 0;
@@ -276,17 +298,19 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
             fpe[l] = std::sqrt(w[l] * dx2 + dy2 / w[l] + 2 * eta * cr);
             if (fpe0_due[l]) { fpe0[l] = fpe[l]; fpe0_due[l] = false; due--; }
         }
+        t_check_other_acc += omp_get_wtime() - t_norm0;
         if (!chk) continue;
-
-
-        //kontrol iteration 
+        // KKT's SpMM
+        t_sp_ck = omp_get_wtime();
         spmm_w<N>(W, s.A, Xh.data(), AX.data());
+        t_spmm_check_acc += omp_get_wtime() - t_sp_ck;
+        // KKT dual 
+        t_norm0 = omp_get_wtime();
         for (int l = 0; l < W; l++) {
             if (done[l]) continue;
             for (int j = 0; j < n; j++) {
                 long q = (long)j * W + l;
-                double d = (Xb[q] - Xh[q]) / tau[l], u = S[j] / tc[l];  // d = (x^ - x) / tau
-                //UNDO scalings here
+                double d = (Xb[q] - Xh[q]) / tau[l], u = S[j] / tc[l];
                 x[j] = Xh[q] / (S[j] * tb); c[j] = C[(long)j * N + id[l]];
                 r[j] = (d + Cs[q] - AtY[q]) * u;
                 dres[j] = -(d + AtYh[q] - AtY[q]) * u;
@@ -302,7 +326,7 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
                 done[l] = true; left--;
             }
         }
-
+        t_check_other_acc += omp_get_wtime() - t_norm0;
         //compaction
         if (N > 1 && o.compact && left && left < W) {
             // move unfinished LPs to columns 0..left-1 (in place: targets never pass sources)
@@ -361,6 +385,15 @@ std::vector<Sol> pdhg_batch(const LP& lp, const std::vector<double>& C, double e
         // new anchor = PDHG point T(z)
         for (long q = 0; q < (long)n * W; q++) if (rs[q % W]) X0[q] = X[q] = Xh[q];
         for (long q = 0; q < (long)m * W; q++) if (rs[q % W]) Y0[q] = Y[q] = Yh[q];
+    }
+
+    if (tm) {
+        tm->t_spmm_main += t_spmm_main_acc;
+        tm->t_spmm_check += t_spmm_check_acc;
+        tm->t_check_other += t_check_other_acc;
+        double t_batch_total = omp_get_wtime() - t_batch_start;
+        tm->t_total += t_batch_total;
+        tm->t_other += std::max(0.0, t_batch_total - (tm->t_setup + t_spmm_main_acc + t_spmm_check_acc + t_check_other_acc));
     }
     return sol;
 }

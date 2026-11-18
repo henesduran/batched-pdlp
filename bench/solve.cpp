@@ -54,9 +54,9 @@ static std::vector<double> perturb(const LP& lp, double delta, int nl = N) {
 // pdhg_batch<k> for a runtime k <= K
 template <int K>
 std::vector<Sol> batch_k(int k, const LP& lp, const std::vector<double>& C, double eps, int maxit, Opts o,
-                         const Branch* br = nullptr, const Sol* warm = nullptr) {
-    if constexpr (K > 1) if (k < K) return batch_k<K - 1>(k, lp, C, eps, maxit, o, br, warm);
-    return pdhg_batch<K>(lp, C, eps, maxit, o, br, warm);
+                         const Branch* br = nullptr, const Sol* warm = nullptr, Timings* tm = nullptr) {
+    if constexpr (K > 1) if (k < K) return batch_k<K - 1>(k, lp, C, eps, maxit, o, br, warm, tm);
+    return pdhg_batch<K>(lp, C, eps, maxit, o, br, warm, tm);
 }
 constexpr int KMAX = 32;
 
@@ -352,24 +352,49 @@ int main(int argc, char** argv) {
         const int nl = atoi(argv[4]), ch = atoi(argv[5]);
         std::vector<double> C = perturb(lp, delta, nl);
         std::vector<Sol> all(nl);
+        const int nbatch = (nl + ch - 1) / ch;
+        std::vector<Timings> chunk_tm(nbatch);
         auto run = [&](int b) {
             int s0 = b * ch, k = std::min(ch, nl - s0);
             std::vector<double> Ck((long)n * k);
             for (int j = 0; j < n; j++)
                 for (int l = 0; l < k; l++) Ck[(long)j * k + l] = C[(long)j * nl + s0 + l];
-            std::vector<Sol> r = batch_k<KMAX>(k, lp, Ck, eps, maxit, o);
+            Timings tm;
+            std::vector<Sol> r = batch_k<KMAX>(k, lp, Ck, eps, maxit, o, nullptr, nullptr, &tm);
             for (int l = 0; l < k; l++) all[s0 + l] = std::move(r[l]);
+            chunk_tm[b] = tm;
         };
-        const int nbatch = (nl + ch - 1) / ch;
         double t0 = omp_get_wtime(); //walltime
         if (par) side_by_side(nbatch, run);
         else for (int b = 0; b < nbatch; b++) run(b);
         double t = omp_get_wtime() - t0;
+        Timings tot_tm;
+        for (const auto& tm : chunk_tm) {
+            tot_tm.t_setup       += tm.t_setup;
+            tot_tm.t_spmm_main   += tm.t_spmm_main;
+            tot_tm.t_spmm_check  += tm.t_spmm_check;
+            tot_tm.t_check_other += tm.t_check_other;
+            tot_tm.t_other       += tm.t_other;
+            tot_tm.t_total       += tm.t_total;
+        }
+        double t_spmm_total = tot_tm.t_spmm_main + tot_tm.t_spmm_check;
         printf("matrix,delta,nlp,chunk,lp,status,iters,pobj,dobj\n");
         for (int l = 0; l < nl; l++)
             printf("%s,%g,%d,%d,%d,%s,%d,%.10g,%.10g\n", name.c_str(), delta, nl, ch, l,
                    all[l].ok ? "OPTIMAL" : "MAXITER", all[l].iters, all[l].pobj, all[l].dobj);
-        printf("# time total %.3f s, per LP %.3f s, par %d\n", t, t / nl, (int)par);
+        long total_iters = 0;
+        for (int l = 0; l < nl; l++) total_iters += all[l].iters;
+        double ms_per_lp_iter = total_iters > 0 ? (t / total_iters) * 1000.0 : 0.0;
+        double t_base = tot_tm.t_total > 0 ? tot_tm.t_total : t;
+        printf("# time total %.3f s, per LP %.3f s, total_lp_iters %ld, per LP-iter %.4f ms, par %d\n",
+               t, t / nl, total_iters, ms_per_lp_iter, (int)par);
+        printf("# breakdown: setup %.3f s (%.1f%%), spmm_main %.3f s (%.1f%%), spmm_check %.3f s (%.1f%%), spmm_total %.3f s (%.1f%%), check_other %.3f s (%.1f%%), other %.3f s (%.1f%%)\n",
+               tot_tm.t_setup, t_base > 0 ? 100.0 * tot_tm.t_setup / t_base : 0.0,
+               tot_tm.t_spmm_main, t_base > 0 ? 100.0 * tot_tm.t_spmm_main / t_base : 0.0,
+               tot_tm.t_spmm_check, t_base > 0 ? 100.0 * tot_tm.t_spmm_check / t_base : 0.0,
+               t_spmm_total, t_base > 0 ? 100.0 * t_spmm_total / t_base : 0.0,
+               tot_tm.t_check_other, t_base > 0 ? 100.0 * tot_tm.t_check_other / t_base : 0.0,
+               tot_tm.t_other, t_base > 0 ? 100.0 * tot_tm.t_other / t_base : 0.0);
         fflush(stdout);
         if (!sol.empty())
             for (int l = 0; l < nl; l++) write_sol(all[l], sol + "/b" + std::to_string(l) + ".sol");
