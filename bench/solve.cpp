@@ -378,10 +378,13 @@ int main(int argc, char** argv) {
             tot_tm.t_total       += tm.t_total;
         }
         double t_spmm_total = tot_tm.t_spmm_main + tot_tm.t_spmm_check;
-        printf("matrix,delta,nlp,chunk,lp,status,iters,pobj,dobj\n");
-        for (int l = 0; l < nl; l++)
-            printf("%s,%g,%d,%d,%d,%s,%d,%.10g,%.10g\n", name.c_str(), delta, nl, ch, l,
-                   all[l].ok ? "OPTIMAL" : "MAXITER", all[l].iters, all[l].pobj, all[l].dobj);
+        printf("matrix,delta,nlp,chunk,lp,status,iters,pobj,dobj,rp,rd,gap\n");
+        for (int l = 0; l < nl; l++) {
+            const Sol& s = all[l];
+            double gap = std::fabs(s.pobj - s.dobj) / (1 + std::fabs(s.pobj) + std::fabs(s.dobj));
+            printf("%s,%g,%d,%d,%d,%s,%d,%.10g,%.10g,%.3e,%.3e,%.3e\n", name.c_str(), delta, nl, ch, l,
+                   s.ok ? "OPTIMAL" : "MAXITER", s.iters, s.pobj, s.dobj, s.rp, s.rd, gap);
+        }
         long total_iters = 0;
         for (int l = 0; l < nl; l++) total_iters += all[l].iters;
         double ms_per_lp_iter = total_iters > 0 ? (t / total_iters) * 1000.0 : 0.0;
