@@ -2,3 +2,5 @@ build/
 *.o
 *.mps
 sol/
+test_sols/
+results/
