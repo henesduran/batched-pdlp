@@ -44,8 +44,9 @@ def params(maxit, th, step="constant"):
     if maxit == 0:  
         p = ("termination_criteria { simple_optimality_criteria { eps_optimal_absolute: 1e-4 "
              "eps_optimal_relative: 1e-4 } } verbosity_level: 2 num_threads: %d" % th)
-        if step == "constant":
-            p += " linesearch_rule: CONSTANT_STEP_SIZE_RULE termination_check_frequency: 200"
+        if step == "constant": 
+            p += (" linesearch_rule: CONSTANT_STEP_SIZE_RULE termination_check_frequency: 200"
+                  " major_iteration_frequency: 200")
         return p
     return ("termination_criteria { iteration_limit: %d eps_primal_infeasible: 0 eps_dual_infeasible: 0 "
             "simple_optimality_criteria { eps_optimal_absolute: 0 eps_optimal_relative: 0 } } "
