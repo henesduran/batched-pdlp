@@ -15,7 +15,8 @@ def args_():
     p.add_argument("--threads", default="1,2,4")
     p.add_argument("--node", type=int, default=-1, help="socket to pin to; -1 = no numactl")
     p.add_argument("--repeats", type=int, default=3)
-    p.add_argument("--maxit", type=int, default=200, help="0 = solve to 1e-4 with OR-Tools defaults")
+    p.add_argument("--maxit", type=int, default=200, help="0 = solve to 1e-4")
+    p.add_argument("--step", choices=["default", "constant"], default="constant", help="step rule for --maxit 0")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--exe", default=os.path.expanduser("~/pdlp_work/solvers/ortools_cpp/bin/solve"))
     p.add_argument("--timeout", type=int, default=21600)
@@ -39,10 +40,13 @@ def find_mps(d, m):
     return None
 
 
-def params(maxit, th):
-    if maxit == 0: 
-        return ("termination_criteria { simple_optimality_criteria { eps_optimal_absolute: 1e-4 "
-                "eps_optimal_relative: 1e-4 } } verbosity_level: 2 num_threads: %d" % th)
+def params(maxit, th, step="constant"):
+    if maxit == 0:  
+        p = ("termination_criteria { simple_optimality_criteria { eps_optimal_absolute: 1e-4 "
+             "eps_optimal_relative: 1e-4 } } verbosity_level: 2 num_threads: %d" % th)
+        if step == "constant":
+            p += " linesearch_rule: CONSTANT_STEP_SIZE_RULE termination_check_frequency: 200"
+        return p
     return ("termination_criteria { iteration_limit: %d eps_primal_infeasible: 0 eps_dual_infeasible: 0 "
             "simple_optimality_criteria { eps_optimal_absolute: 0 eps_optimal_relative: 0 } } "
             "linesearch_rule: CONSTANT_STEP_SIZE_RULE termination_check_frequency: 200 "
@@ -127,7 +131,7 @@ def main():
             print(f"[{i}/{len(tasks)}] skip {name}", flush=True)
             continue
         base = numa + [a.exe, "--input", paths[m], "--solver", "pdlp", "--num_threads", str(th)]
-        cmd = base + ["--params", params(a.maxit, th)]
+        cmd = base + ["--params", params(a.maxit, th, a.step)]
         env = dict(os.environ, OMP_NUM_THREADS=str(th))
         load = open("/proc/loadavg").read().split()[0]
         print(f"[{i}/{len(tasks)}] {datetime.now():%m-%d %H:%M:%S} {name} (load {load})", flush=True)
